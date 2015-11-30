@@ -163,14 +163,17 @@
 				};
 				
 				$.extend(Room.prototype, {
-					reserveTo: function(n) {
-						this.reservedFor = n || null;
-					},
 					isReserved: function() {
 						return this.reservedFor !== null;
 					},
 					toString: function() {
-						return JSON.stringify({name:this.name, reservedFor:this.reservedFor});
+						var k,o={};
+						for (k in this) {
+							if (this.hasOwnPropertry(k)) {
+								o[k] = this[k];
+							}
+						}
+						return JSON.stringify(o);
 					}
 				});
 			
