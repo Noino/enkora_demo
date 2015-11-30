@@ -1,0 +1,574 @@
+<!doctype html>
+<html>
+	<head>
+		<script src="jquery.js"></script>
+		<script src="lz-string.min.js"></script>
+	
+		<style>
+			* {
+				box-sizing: border-box;
+			}
+			html,body{
+				height: 100%;
+				min-height:100%;
+				padding: 0;
+				margin: 0;
+				background-color: #ddddcb;
+			}
+		
+			.mtop {
+				margin-top: 10px;
+			}
+			.tmpl {
+				display:none;
+			}
+			
+			.error {
+				background-color: #fcc !important;
+				border-color: #c88 !important;
+			}
+			
+			#menu {
+				display: inline-block;
+			}
+			#menu:after { content:"\A"; white-space:pre; }
+			
+			#menu > li {
+				color: #0645AD;
+				text-decoration: underline;
+				cursor:pointer;
+			}
+			
+			.reservations > header {
+				font-size: larger;
+				font-weigth: bold;
+			}
+			
+			.reservation {
+				width: 250px;
+				min-height: 50px;
+				background-color: rgba(75,125,75,.5);
+				float: left;
+				margin: 10px;
+				padding: 2px;
+				border-radius: 5px;
+			}
+
+			.reservation > header {
+				position: relative;
+				background-color: rgba(50,50,50,.3);
+				padding: 5px 2px;
+				margin: -2px -2px 0 -2px;
+				border-radius: 5px 5px 0 0;
+			}
+			
+			.close_X {
+				position: absolute;
+				right: 2px;
+				top: 2px;
+				cursor: pointer;
+			}
+			
+			#dialog {
+				position: absolute;
+				top: 0;
+				bottom: 0;
+				width: 100%;
+				height: 100%;
+				background-color: rgba(0,0,0,.45);
+				cursor: alias;
+			}
+			#dialog > div {
+				position:absolute;
+				border-radius: 5px;
+				top: 50%;
+				left: 50%;
+				width: 400px;
+				min-height: 150px;
+				margin-left: -200px;
+				margin-top: -75px;
+				border: 1px solid #000;
+				background-color: #ccd;
+				cursor: default;
+			}
+			#dialog header {
+				display:block;
+				width: 100%;
+				background-color: #aab;
+				margin-bottom: 10px;
+				border-radius: 5px 5px 0 0;
+				padding: 5px;
+				font-weight: bold;
+			}
+			#dialog .content {
+				padding: 5px;
+			}
+			#tooltip {
+				z-index: 10;
+				position: absolute;
+				background-color: rgba(234, 209, 116, 0.85);
+				max-width: 33%;
+				border-radius: 5px;
+				border: 1px solid #ccc;
+				padding: 10px;
+			}
+			.tooltip {
+				cursor: help;
+			}
+		</style>
+		
+		<script>
+			"use strict";
+			
+			(function($){
+
+				var Templates;
+				
+				$.fn.serializeObject = function() {
+					var o = {};
+					var a = this.serializeArray();
+					$.each(a, function() {
+						if (o[this.name]) {
+							if (!o[this.name].push) {
+								o[this.name] = [o[this.name]];
+							}
+							o[this.name].push(this.value || '');
+						} else {
+							o[this.name] = this.value || '';
+						}
+					});
+					return o;
+				};
+				
+				var util = {
+					parseTmpl: function(tmplstr, data) {
+						return tmplstr.replace(/{[^{}]+}/g, function(key) {
+							return ""+data[key.replace(/[{}]+/g, "")] || "";
+						})
+					},
+					null_if_empty: function(str) {
+						return (str || '').trim().length > 0 ? str : null;
+					},
+					showDialog: function(title, content) {
+						$('#dialog *').off();
+						$('#dialog .head').html(title);
+						$('#dialog .content').html(content);
+						$('#dialog').show();
+					}
+				};
+			
+				var Room = function(name, reservedFor) {
+					this.name = name || '';
+					this.reservedFor = reservedFor || null;
+				};
+				
+				$.extend(Room.prototype, {
+					reserveTo: function(n) {
+						this.reservedFor = n || null;
+					},
+					isReserved: function() {
+						return this.reservedFor !== null;
+					},
+					toString: function() {
+						return JSON.stringify({name:this.name, reservedFor:this.reservedFor});
+					}
+				});
+			
+			
+				var Reserver_Demo = function(){
+					this.rooms = [];
+				
+					$(window).on('selectstart', function(ev) { ev.preventDefault(); });
+					$('#menu > li').on('click tap', $.proxy(this.action, this));
+					$('#reserv_list').on('click tap', '.close_X', $.proxy(this.removeReservation, this));
+					$('#persist').on('change', $.proxy(this.persistChange, this))
+					$('#dialog').on('click', function(ev){
+						ev.stopPropagation();
+						if( ev.target === this ) {
+							$('#dialog').hide();
+						}
+					}).on('mouseover', '.tooltip', function(ev) {
+						ev.stopPropagation();
+						var t = $(ev.target), o = t.offset();
+						$('#tooltip').html( t.data('desc') ).css({left: o.left + t.width(), top: o.top - $('#tooltip').height()/2 }).show();
+					}).on('mouseout', '.tooltip', function(ev){
+						ev.stopPropagation();
+						$('#tooltip').hide();
+					});
+					$(document).on('enkora_demo:rooms_changed', $.proxy(this.updateReservationsList, this));
+					
+					this.load();
+				};
+				
+				$.extend(Reserver_Demo.prototype, {
+					
+					action: function(ev) {
+						switch ($(ev.target).data('act')) {
+							case 'addr':
+								util.showDialog(
+									'Add Room',
+									util.parseTmpl(Templates['addr_tmpl'], {})
+								);
+								$('#room_name').on('keyup click change', $.proxy(this.checkRoomName, this));
+								$('#dialog form').on('submit', $.proxy(this.addRoom, this));
+								break;
+								
+							case 'edtr':
+								if (this.rooms.length > 0) {
+									var opts = '';
+									for(var i=0,l=this.rooms.length; i<l; i++) {
+										opts += util.parseTmpl(Templates['select_option_tmpl'], {
+											val: i,
+											txt: this.rooms[i].name
+										});
+									}
+								
+									util.showDialog(
+										'Edit Room',
+										util.parseTmpl(Templates['edtr_tmpl'], {
+											rooms_select: opts
+										})
+									)
+									
+									$('#room_index').on('change', $.proxy(this.editRoomChanged, this));
+									$('#room_name').on('keyup click change', $.proxy(this.checkRoomName, this));
+									$('#dialog form').on('submit', $.proxy(this.editRoom, this));
+									
+									this.editRoomChanged();
+								} else {
+									util.showDialog(
+										'Error',
+										util.parseTmpl(Templates['err_msg_tmpl'], {msg: 'You need to add rooms first.'})
+									);
+								}
+								break;
+								
+							case 'rmvr':
+								if (this.rooms.length > 0) {
+									var opts = '';
+									for(var i=0,l=this.rooms.length; i<l; i++) {
+										if (this.rooms[i].isReserved()) { continue; }
+										
+										opts += util.parseTmpl(Templates['select_option_tmpl'], {
+											val: i,
+											txt: this.rooms[i].name
+										});
+									}
+									
+									if (opts.length > 0) {
+									
+										util.showDialog(
+											'Remove Room',
+											util.parseTmpl(Templates['rmvr_tmpl'], {
+												rooms_select: opts
+											})
+										)
+										$('#dialog form').on('submit', $.proxy(this.removeRoom, this));
+									} else {
+										util.showDialog(
+											'Error',
+											util.parseTmpl(Templates['err_msg_tmpl'], {msg: 'There are no free rooms.'})
+										);
+									}
+								} else {
+									util.showDialog(
+										'Error',
+										util.parseTmpl(Templates['err_msg_tmpl'], {msg: 'You need to add rooms first.'})
+									);
+								}
+								
+								break;
+								
+							case 'reserv':
+								if (this.rooms.length > 0) {
+									var opts = '';
+									for(var i=0,l=this.rooms.length; i<l; i++) {
+										if (this.rooms[i].isReserved()) { continue; }
+										
+										opts += util.parseTmpl(Templates['select_option_tmpl'], {
+											val: i,
+											txt: this.rooms[i].name
+										});
+									}
+									
+									if (opts.length > 0) {
+									
+										util.showDialog(
+											'Reserve Room',
+											util.parseTmpl(Templates['reserv_tmpl'], {
+												rooms_select: opts
+											})
+										)
+										$('#dialog form').on('submit', $.proxy(this.addReservation, this));
+									} else {
+										util.showDialog(
+											'Error',
+											util.parseTmpl(Templates['err_msg_tmpl'], {msg: 'There are no free rooms.'})
+										);
+									}
+								} else {
+									util.showDialog(
+										'Error',
+										util.parseTmpl(Templates['err_msg_tmpl'], {msg: 'You need to add rooms first.'})
+									);
+								}
+							
+								break;
+						}
+					},
+					
+					checkRoomName: function(ev) {
+						var e = $(ev.target);
+						if (false === this.roomExists(e.val())) {
+							e.removeClass('error');
+						} else {
+							e.addClass('error');
+						}
+					},
+					
+					roomExists: function(name) {
+						for(var i=this.rooms.length-1; i>=0; i--) {
+							if (this.rooms[i].name == name) {
+								return i;
+							}
+						}
+						return false;
+					},
+					
+					addRoom: function(ev) {
+						ev.preventDefault();
+						var d = $(ev.target).serializeObject();
+						if (false === this.roomExists(d.room_name)) {
+							this.rooms.push( new Room(
+								d.room_name, 
+								util.null_if_empty(d.room_reserv)
+							));
+						}
+						$('#dialog').hide();
+						$(document).trigger('enkora_demo:rooms_changed');
+					},
+					
+					editRoomChanged: function(ev) {
+						var i = $('#room_index').val();
+						if (this.rooms.hasOwnProperty(i)) {
+							$('#room_name').val(this.rooms[i].name);
+							$('#room_reserv').val(this.rooms[i].reservedFor);
+						}
+					},
+					
+					editRoom: function(ev) {
+						ev.preventDefault();
+						var d = $(ev.target).serializeObject();
+						if (this.rooms.hasOwnProperty(d.room_index)) {
+							if (false === this.roomExists(d.room_name) || this.rooms[d.room_index].name == d.room_name) {
+								this.rooms[d.room_index].name = d.room_name;
+								this.rooms[d.room_index].reservedFor = util.null_if_empty(d.room_reserv);
+							}
+						}
+						$('#dialog').hide();
+						$(document).trigger('enkora_demo:rooms_changed');
+					},
+					
+					removeRoom: function(ev) {
+						ev.preventDefault();
+						var d = $(ev.target).serializeObject();
+						if (this.rooms.hasOwnProperty(d.room_index) && !this.rooms[d.room_index].isReserved()) {
+							this.rooms.splice(d.room_index,1);
+						}
+						
+						$('#dialog').hide();
+						$(document).trigger('enkora_demo:rooms_changed');
+					},
+					
+					addReservation: function(ev) {
+						ev.preventDefault();
+						var d = $(ev.target).serializeObject();
+						if (this.rooms.hasOwnProperty(d.room_index) && !this.rooms[d.room_index].isReserved()) {
+							this.rooms[d.room_index].reservedFor = d.room_reserv;
+						}
+						
+						$('#dialog').hide();
+						$(document).trigger('enkora_demo:rooms_changed');
+					},
+					
+					removeReservation: function(ev) {
+						var i = $(ev.target).data('index');
+						if (this.rooms.hasOwnProperty(i)) {
+							this.rooms[i].reservedFor = null;
+						}
+						$(document).trigger('enkora_demo:rooms_changed');
+					},
+					
+					updateReservationsList: function() {
+						$('#reserv_list').html('');
+						for(var i=0,l=this.rooms.length; i<l; i++) {
+							if (!this.rooms[i].isReserved()) { continue; }
+							
+							$('#reserv_list').append(
+								util.parseTmpl(Templates['cur_reserv_tmpl'], {
+									room_index: i,
+									room_name: this.rooms[i].name,
+									room_reserv: this.rooms[i].reservedFor
+								})
+							);
+						}
+						
+						if ($('#persist').is(':checked')) {
+							this.save();
+						}
+					},
+					
+					persistChange: function() {
+						if ($('#persist').is(':checked')) {
+							this.save();
+						} else {
+							this.destroySave();
+						}
+					},
+					
+					destroySave: function() {
+						localStorage.removeItem('enkora_demo_rooms');
+					},
+					
+					save: function() {
+						localStorage.setItem('enkora_demo_rooms', LZString.compressToUTF16( JSON.stringify(this.rooms) ));
+					},
+					
+					load: function() {
+						if (typeof localStorage.getItem('enkora_demo_rooms') !== 'undefined' && localStorage.getItem('enkora_demo_rooms') != null) {
+							$('#persist').prop('checked', true);
+							var r = JSON.parse(LZString.decompressFromUTF16(localStorage.getItem('enkora_demo_rooms')));
+							for(var i=0,l=r.length; i<l; i++) {
+								if (false === this.roomExists(r[i].name)) {
+									this.rooms.push( new Room(
+										r[i].name, 
+										util.null_if_empty(r[i].reservedFor)
+									));
+								}
+							}
+							$(document).trigger('enkora_demo:rooms_changed');
+						}
+					}
+					
+				});
+			
+			
+				$(function(){
+					Templates = (function(h){
+						$('.tmpl').each(function(){
+							h[this.id] = $(this).html();
+							$(this).remove();
+						});
+						return h;
+					})({});
+					
+					new Reserver_Demo();
+				});
+			})(jQuery);
+						
+		</script>
+		
+	</head>
+	<body>
+		<p>
+			Persist data: <input type="checkbox" id="persist">
+		</p>
+		
+		<ul id="menu">
+			<li data-act="addr">Add Room</li>
+			<li data-act="edtr">Edit Room</li>
+			<li data-act="rmvr">Remove Room</li>
+			<li class="mtop" data-act="reserv">Make Reservation</li>
+		</ul>
+		<div class="reservations">
+			<header>Current reservations</header>
+			<div id="reserv_list"></div>
+		</div>
+		
+		<div id="dialog" style="display:none;">
+			<div>
+				<header> <div class="head">dialog</div> </header>
+				<div class="content">
+				</div>
+			</div>
+		</div>
+		<div id="tooltip" style="display:none"></div>
+		
+		
+		
+		
+		<div class="tmpl" id="err_msg_tmpl">
+			<p>{msg}</p>
+		</div>
+		<div class="tmpl" id="addr_tmpl">
+			<form>
+				<p>
+					<label for="room_name">Room name:</label>
+					<input id="room_name" name="room_name" type="text">
+				</p>
+				<p>
+					<label for="room_reserv">Reserved for:</label>
+					<input id="room_reserv" name="room_reserv" type="text">
+				</p>
+				<p>
+					<input type="submit" value="Add Room">
+				</p>
+			</form>
+		</div>
+		<div class="tmpl" id="edtr_tmpl">
+			<form>
+				<p>
+					<label for="room_index">Room to edit:</label>
+					<select id="room_index" name="room_index">{rooms_select}</select>
+				</p>
+				<p>
+					<label for="room_name">Room new name:</label>
+					<input id="room_name" name="room_name" type="text">
+				</p>
+				<p>
+					<label for="room_reserv">Reserved for:</label>
+					<input id="room_reserv" name="room_reserv" type="text">
+				</p>
+				<p>
+					<input type="submit" value="Edit Room">
+				</p>
+			</form>
+		</div>
+		<div class="tmpl" id="rmvr_tmpl">
+			<form>
+				<p>
+					<label for="room_index">Room to remove:</label>
+					<select id="room_index" name="room_index">{rooms_select}</select>
+				</p>
+				<p>
+					<input type="submit" value="Remove Room">
+				</p>
+			</form>
+		</div>
+		<div class="tmpl" id="reserv_tmpl">
+			<form>
+				<p>
+					<label for="room_index">Room to reserve:</label>
+					<select id="room_index" name="room_index">{rooms_select}</select>
+				</p>
+				<p>
+					<label for="room_reserv">Reserved for:</label>
+					<input id="room_reserv" name="room_reserv" type="text">
+				</p>
+				<p>
+					<input type="submit" value="Reserve Room">
+				</p>
+			</form>
+		</div>
+		<div class="tmpl" id="cur_reserv_tmpl">
+			<div class="reservation">
+				<header>Room: {room_name} <div class="close_X" data-index="{room_index}">[X]</div></header>
+				<p>Reserved for: {room_reserv}</p>
+			</div>
+		</div>
+		<div class="tmpl" id="select_option_tmpl">
+			<option value="{val}">{txt}</option>
+		</div>
+		
+	</body>
+</html>
